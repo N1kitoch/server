@@ -1,0 +1,10 @@
+HTTP server listening on http://0.0.0.0:3100
+Local Mini App URL: http://localhost:3100
+Static host for Mini App: https://n1kitoch.github.io/app
+1755808322645Caught an error:
+Error: read ETIMEDOUT
+    at TLSWrap.onStreamRead (node:internal/stream_base_commons:216:20) {
+  errno: -60,
+  code: 'ETIMEDOUT',
+  syscall: 'read'
+}
