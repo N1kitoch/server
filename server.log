@@ -1,6 +1,0 @@
-HTTP server listening on http://0.0.0.0:3100
-Local Mini App URL: http://localhost:3100
-Static host for Mini App: https://n1kitoch.github.io/app
-Tunnel URL: https://example.tunnelmole.net
-Using provided TUNNEL_URL: https://example.tunnelmole.net
-Final Mini App URL: https://n1kitoch.github.io/app/index.html?api=https%3A%2F%2Fexample.tunnelmole.net&bot=N1kitochMiniAppBot
