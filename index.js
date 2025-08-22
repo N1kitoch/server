@@ -99,11 +99,20 @@ async function processWebAppData(payload, queryId = null) {
     // Обновляем метку времени
     data.timestamp = new Date().toISOString();
 
-    // Формируем сообщение для администратора
-    const adminMessage = formatAdminMessage(payload);
+    // Определяем, нужно ли отправлять уведомление админу
+    const shouldNotifyAdmin = isImportantEvent(payload.type);
     
-    // Отправляем уведомление администратору
-    const sentToAdmin = await sendToBot(ADMIN_ID, adminMessage);
+    let sentToAdmin = false;
+    if (shouldNotifyAdmin) {
+      // Формируем сообщение для администратора только для важных событий
+      const adminMessage = formatAdminMessage(payload);
+      
+      // Отправляем уведомление администратору
+      sentToAdmin = await sendToBot(ADMIN_ID, adminMessage);
+    } else {
+      // Для обычных событий просто логируем
+      console.log(`📊 Событие ${payload.type} залогировано (не отправлено админу)`);
+    }
 
     // Если есть queryId, отвечаем на WebApp Query
     let answeredQuery = false;
@@ -123,16 +132,18 @@ async function processWebAppData(payload, queryId = null) {
 
     // Логируем результат
     console.log('✅ Обработка завершена:', {
+      type: payload.type,
+      userId: payload.userData?.id,
       sentToAdmin,
       answeredQuery,
-      type: payload.type,
-      userId: payload.userData?.id
+      isImportant: shouldNotifyAdmin
     });
 
     return {
       success: true,
       sentToAdmin,
       answeredQuery,
+      logged: true,
       message: 'Данные обработаны успешно'
     };
 
@@ -145,9 +156,23 @@ async function processWebAppData(payload, queryId = null) {
   }
 }
 
+// Функция определения важных событий
+function isImportantEvent(eventType) {
+  const importantEvents = [
+    'contact_form',      // Контактные формы
+    'service_interest',  // Интерес к услугам
+    'order_submit',      // Заказы
+    'payment_request',   // Запросы на оплату
+    'error_report',      // Критические ошибки
+    'support_request'    // Запросы поддержки
+  ];
+  
+  return importantEvents.includes(eventType);
+}
+
 // Функция форматирования сообщения для администратора
 function formatAdminMessage(payload) {
-  const baseMessage = `📱 **Новые данные из Mini App**\n\n` +
+  const baseMessage = `📱 **Важное событие из Mini App**\n\n` +
     `👤 **Пользователь:** ${payload.userData?.firstName || 'Неизвестно'} ${payload.userData?.lastName || ''}\n` +
     `🆔 **ID:** ${payload.userData?.id || '—'}\n` +
     `📝 **Тип:** ${payload.type || 'unknown'}\n` +
@@ -166,37 +191,26 @@ function formatAdminMessage(payload) {
       detailsMessage = `🎯 **Интерес к услуге:**\n` +
         `Услуга: ${payload.service || '—'}`;
       break;
-    case 'profile_load':
-      detailsMessage = `👤 **Загрузка профиля:**\n` +
-        `Пользователь: ${payload.userData?.firstName || '—'} ${payload.userData?.lastName || ''}\n` +
-        `Username: @${payload.userData?.username || '—'}`;
+    case 'order_submit':
+      detailsMessage = `🛒 **Новый заказ:**\n` +
+        `Товар: ${payload.product || '—'}\n` +
+        `Сумма: ${payload.amount || '—'}`;
       break;
-    case 'page_navigation':
-      detailsMessage = `🧭 **Навигация:**\n` +
-        `Страница: ${payload.page || '—'}\n` +
-        `Предыдущая: ${payload.previousPage || '—'}`;
-      break;
-    case 'button_click':
-      detailsMessage = `🔘 **Клик по кнопке:**\n` +
-        `Кнопка: ${payload.button || '—'}\n` +
-        `Страница: ${payload.page || '—'}`;
-      break;
-    case 'form_submit':
-      detailsMessage = `📝 **Отправка формы:**\n` +
-        `Форма: ${payload.formType || '—'}\n` +
-        `Данные: ${JSON.stringify(payload.formData || {}, null, 2)}`;
+    case 'payment_request':
+      detailsMessage = `💳 **Запрос на оплату:**\n` +
+        `Сумма: ${payload.amount || '—'}\n` +
+        `Метод: ${payload.paymentMethod || '—'}`;
       break;
     case 'error_report':
-      detailsMessage = `⚠️ **Отчет об ошибке:**\n` +
+      detailsMessage = `⚠️ **Критическая ошибка:**\n` +
         `Ошибка: ${payload.error || '—'}\n` +
         `Страница: ${payload.page || '—'}\n` +
         `Стек: ${payload.stack || '—'}`;
       break;
-    case 'analytics_event':
-      detailsMessage = `📊 **Аналитическое событие:**\n` +
-        `Событие: ${payload.event || '—'}\n` +
-        `Категория: ${payload.category || '—'}\n` +
-        `Значение: ${payload.value || '—'}`;
+    case 'support_request':
+      detailsMessage = `🆘 **Запрос поддержки:**\n` +
+        `Тема: ${payload.topic || '—'}\n` +
+        `Описание: ${payload.description || '—'}`;
       break;
     default:
       detailsMessage = `📄 **Данные:**\n${JSON.stringify(payload, null, 2)}`;
