@@ -1,4 +1,5 @@
 // index.js — Бэкенд для Telegram Mini App
+require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
 
@@ -9,8 +10,19 @@ app.use(cors());
 app.use(express.json());
 
 // Конфигурация бота
-const BOT_TOKEN = process.env.BOT_TOKEN || "8117473255:AAHT3Nm6nq7Jz4HRN_8i3rT1eQVWZ5tsdLE";
-const ADMIN_ID = process.env.ADMIN_ID || 585028258;
+const BOT_TOKEN = process.env.BOT_TOKEN;
+const ADMIN_ID = process.env.ADMIN_ID;
+
+// Проверяем обязательные переменные окружения
+if (!BOT_TOKEN) {
+  console.error('❌ Ошибка: BOT_TOKEN не задан в переменных окружения');
+  process.exit(1);
+}
+
+if (!ADMIN_ID) {
+  console.error('❌ Ошибка: ADMIN_ID не задан в переменных окружения');
+  process.exit(1);
+}
 
 // Функция для отправки сообщения в бот
 async function sendToBot(chatId, message, parseMode = 'HTML') {
