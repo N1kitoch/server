@@ -205,7 +205,8 @@ let botDataCache = {
   errors: [],
   reviews: [],
   support_requests: [],
-  chat_messages: []
+  chat_messages: [],
+  average_rating: null
 };
 
 // Endpoint для получения данных от бота
@@ -221,9 +222,16 @@ app.post('/api/bot/data', (req, res) => {
     }
     
     // Добавляем данные в кэш
-    if (botDataCache[type]) {
-      botDataCache[type].push(data);
-      console.log(`📥 Получены данные от бота: ${type}`);
+    if (botDataCache[type] !== undefined) {
+      if (type === 'average_rating') {
+        // Для средней оценки заменяем значение
+        botDataCache[type] = data;
+        console.log(`📥 Получена средняя оценка от бота: ${data.average_rating}/5 (${data.total_reviews} отзывов)`);
+      } else {
+        // Для остальных типов добавляем в массив
+        botDataCache[type].push(data);
+        console.log(`📥 Получены данные от бота: ${type}`);
+      }
     } else {
       console.log(`⚠️ Неизвестный тип данных от бота: ${type}`);
     }
@@ -248,20 +256,32 @@ app.get('/api/frontend/data/:type', async (req, res) => {
     const { type } = req.params;
     const { limit = 50 } = req.query;
     
-    if (!botDataCache[type]) {
+    if (botDataCache[type] === undefined) {
       return res.status(400).json({
         success: false,
         error: `Неизвестный тип данных: ${type}`
       });
     }
     
-    const data = botDataCache[type].slice(-limit);
+    let data, count, total;
+    
+    if (type === 'average_rating') {
+      // Для средней оценки возвращаем объект
+      data = botDataCache[type] ? [botDataCache[type]] : [];
+      count = botDataCache[type] ? 1 : 0;
+      total = botDataCache[type] ? 1 : 0;
+    } else {
+      // Для остальных типов возвращаем массив
+      data = botDataCache[type].slice(-limit);
+      count = data.length;
+      total = botDataCache[type].length;
+    }
     
     res.json({
       success: true,
       data: data,
-      count: data.length,
-      total: botDataCache[type].length
+      count: count,
+      total: total
     });
     
   } catch (error) {
@@ -282,7 +302,9 @@ app.get('/api/frontend/stats', async (req, res) => {
       errors: botDataCache.errors.length,
       reviews: botDataCache.reviews.length,
       support_requests: botDataCache.support_requests.length,
-      chat_messages: botDataCache.chat_messages.length
+      chat_messages: botDataCache.chat_messages.length,
+      average_rating: botDataCache.average_rating ? botDataCache.average_rating.average_rating : 0,
+      total_reviews: botDataCache.average_rating ? botDataCache.average_rating.total_reviews : 0
     };
     
     res.json({
