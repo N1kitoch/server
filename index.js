@@ -31,6 +31,16 @@ let miniAppData = {
   lastUpdate: null
 };
 
+// Хранилище данных от бота
+let botData = {
+  messages: [],
+  requests: [],
+  errors: [],
+  reviews: [],
+  support_requests: [],
+  chat_messages: []
+};
+
 // Функция для добавления данных от Mini App
 function addMiniAppData(payload, queryId = null) {
   const dataEntry = {
@@ -124,7 +134,7 @@ app.post('/webapp-data', async (req, res) => {
 });
 
 // Endpoint для бота - получение новых данных
-app.get('/api/bot/data', (req, res) => {
+app.get('/api/bot/pending', (req, res) => {
   try {
     // Возвращаем все необработанные данные
     const pendingData = miniAppData.pendingData.filter(item => !item.processed);
@@ -188,34 +198,71 @@ app.post('/api/bot/process', (req, res) => {
   }
 });
 
-// Endpoint для получения данных из БД бота
+// Хранилище данных от бота (в памяти)
+let botDataCache = {
+  messages: [],
+  requests: [],
+  errors: [],
+  reviews: [],
+  support_requests: [],
+  chat_messages: []
+};
+
+// Endpoint для получения данных от бота
+app.post('/api/bot/data', (req, res) => {
+  try {
+    const { type, data } = req.body;
+    
+    if (!type || !data) {
+      return res.status(400).json({
+        success: false,
+        error: 'Отсутствуют обязательные поля: type, data'
+      });
+    }
+    
+    // Добавляем данные в кэш
+    if (botDataCache[type]) {
+      botDataCache[type].push(data);
+      console.log(`📥 Получены данные от бота: ${type}`);
+    } else {
+      console.log(`⚠️ Неизвестный тип данных от бота: ${type}`);
+    }
+    
+    res.json({
+      success: true,
+      message: 'Данные получены'
+    });
+    
+  } catch (error) {
+    console.error('❌ Ошибка получения данных от бота:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+});
+
+// Endpoint для получения данных для фронтенда
 app.get('/api/frontend/data/:type', async (req, res) => {
   try {
     const { type } = req.params;
     const { limit = 50 } = req.query;
     
-    // Формируем запрос к боту для получения данных
-    const botResponse = await fetch(`http://localhost:8080/api/bot/db/${type}?limit=${limit}`, {
-      method: 'GET',
-      headers: {
-        'Content-Type': 'application/json',
-      }
-    });
-    
-    if (botResponse.ok) {
-      const data = await botResponse.json();
-      res.json({
-        success: true,
-        data: data.data || [],
-        count: data.count || 0
-      });
-    } else {
-      console.error(`❌ Ошибка получения данных от бота: ${botResponse.status}`);
-      res.status(500).json({
+    if (!botDataCache[type]) {
+      return res.status(400).json({
         success: false,
-        error: 'Ошибка получения данных от бота'
+        error: `Неизвестный тип данных: ${type}`
       });
     }
+    
+    const data = botDataCache[type].slice(-limit);
+    
+    res.json({
+      success: true,
+      data: data,
+      count: data.length,
+      total: botDataCache[type].length
+    });
     
   } catch (error) {
     console.error('❌ Ошибка получения данных для фронтенда:', error);
@@ -226,33 +273,66 @@ app.get('/api/frontend/data/:type', async (req, res) => {
   }
 });
 
-// Endpoint для получения статистики из БД бота
+// Endpoint для получения статистики
 app.get('/api/frontend/stats', async (req, res) => {
   try {
-    // Формируем запрос к боту для получения статистики
-    const botResponse = await fetch('http://localhost:8080/api/bot/db/stats', {
-      method: 'GET',
-      headers: {
-        'Content-Type': 'application/json',
-      }
-    });
+    const stats = {
+      messages: botDataCache.messages.length,
+      requests: botDataCache.requests.length,
+      errors: botDataCache.errors.length,
+      reviews: botDataCache.reviews.length,
+      support_requests: botDataCache.support_requests.length,
+      chat_messages: botDataCache.chat_messages.length
+    };
     
-    if (botResponse.ok) {
-      const data = await botResponse.json();
-      res.json({
-        success: true,
-        stats: data.stats || {}
-      });
-    } else {
-      console.error(`❌ Ошибка получения статистики от бота: ${botResponse.status}`);
-      res.status(500).json({
-        success: false,
-        error: 'Ошибка получения статистики от бота'
-      });
-    }
+    res.json({
+      success: true,
+      stats: stats
+    });
     
   } catch (error) {
     console.error('❌ Ошибка получения статистики для фронтенда:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+});
+
+// Endpoint для приема данных от бота
+app.post('/api/bot/store', (req, res) => {
+  try {
+    const { type, data, timestamp } = req.body;
+    
+    if (!type || !data) {
+      return res.status(400).json({
+        success: false,
+        error: 'Отсутствуют обязательные поля: type, data'
+      });
+    }
+    
+    // Добавляем данные в соответствующую категорию
+    const dataWithTimestamp = {
+      ...data,
+      timestamp: timestamp || new Date().toISOString(),
+      received_at: new Date().toISOString()
+    };
+    
+    if (botData[type]) {
+      botData[type].push(dataWithTimestamp);
+      console.log(`✅ Данные сохранены: ${type}, ID: ${data.id}`);
+    } else {
+      console.log(`⚠️ Неизвестный тип данных: ${type}`);
+    }
+    
+    res.json({
+      success: true,
+      message: `Данные типа ${type} сохранены`,
+      count: botData[type] ? botData[type].length : 0
+    });
+    
+  } catch (error) {
+    console.error('❌ Ошибка сохранения данных от бота:', error);
     res.status(500).json({
       success: false,
       error: error.message
