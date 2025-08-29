@@ -227,6 +227,10 @@ app.post('/api/bot/data', (req, res) => {
         // Для средней оценки заменяем значение
         botDataCache[type] = data;
         console.log(`📥 Получена средняя оценка от бота: ${data.average_rating}/5 (${data.total_reviews} отзывов)`);
+      } else if (type === 'reviews') {
+        // Для отзывов заменяем весь массив
+        botDataCache[type] = data;
+        console.log(`📥 Получены отзывы от бота: ${Array.isArray(data) ? data.length : 1} отзывов`);
       } else {
         // Для остальных типов добавляем в массив
         botDataCache[type].push(data);
@@ -251,10 +255,10 @@ app.post('/api/bot/data', (req, res) => {
 });
 
 // Endpoint для получения данных для фронтенда
+// Бэкенд только передает данные, всю логику пагинации и обработки делает бот
 app.get('/api/frontend/data/:type', async (req, res) => {
   try {
     const { type } = req.params;
-    const { limit = 50 } = req.query;
     
     if (botDataCache[type] === undefined) {
       return res.status(400).json({
@@ -263,25 +267,13 @@ app.get('/api/frontend/data/:type', async (req, res) => {
       });
     }
     
-    let data, count, total;
-    
-    if (type === 'average_rating') {
-      // Для средней оценки возвращаем объект
-      data = botDataCache[type] ? [botDataCache[type]] : [];
-      count = botDataCache[type] ? 1 : 0;
-      total = botDataCache[type] ? 1 : 0;
-    } else {
-      // Для остальных типов возвращаем массив
-      data = botDataCache[type].slice(-limit);
-      count = data.length;
-      total = botDataCache[type].length;
-    }
-    
+    // Просто возвращаем все данные, которые есть в кэше
+    // Бот сам решает, что и сколько отправлять
     res.json({
       success: true,
-      data: data,
-      count: count,
-      total: total
+      data: botDataCache[type] || [],
+      count: Array.isArray(botDataCache[type]) ? botDataCache[type].length : 1,
+      total: Array.isArray(botDataCache[type]) ? botDataCache[type].length : 1
     });
     
   } catch (error) {
@@ -314,6 +306,49 @@ app.get('/api/frontend/stats', async (req, res) => {
     
   } catch (error) {
     console.error('❌ Ошибка получения статистики для фронтенда:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+});
+
+// Endpoint для очистки кэша (используется ботом при перезапуске)
+app.post('/api/bot/clear-cache', (req, res) => {
+  try {
+    const { type } = req.body;
+    
+    if (type) {
+      // Очищаем конкретный тип данных
+      if (botDataCache[type] !== undefined) {
+        if (type === 'average_rating') {
+          botDataCache[type] = null;
+        } else {
+          botDataCache[type] = [];
+        }
+        console.log(`🧹 Кэш ${type} очищен ботом`);
+      }
+    } else {
+      // Очищаем весь кэш
+      botDataCache = {
+        messages: [],
+        requests: [],
+        errors: [],
+        reviews: [],
+        support_requests: [],
+        chat_messages: [],
+        average_rating: null
+      };
+      console.log('🧹 Весь кэш очищен ботом');
+    }
+    
+    res.json({
+      success: true,
+      message: type ? `Кэш ${type} очищен` : 'Весь кэш очищен'
+    });
+    
+  } catch (error) {
+    console.error('❌ Ошибка очистки кэша:', error);
     res.status(500).json({
       success: false,
       error: error.message
