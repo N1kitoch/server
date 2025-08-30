@@ -210,6 +210,35 @@ let botDataCache = {
   average_rating: null
 };
 
+// Система адаптивной синхронизации
+let activeUsers = new Map(); // Активные пользователи
+let userDataCache = new Map(); // Кэш данных пользователей
+
+// Функция очистки неактивных пользователей
+function cleanupInactiveUsers() {
+  const cutoff = Date.now() - 15 * 60 * 1000; // 15 минут
+  const inactiveUsers = [];
+  
+  for (const [userId, userData] of activeUsers.entries()) {
+    if (userData.lastSeen < cutoff) {
+      inactiveUsers.push(userId);
+    }
+  }
+  
+  inactiveUsers.forEach(userId => {
+    activeUsers.delete(userId);
+    userDataCache.delete(userId);
+    console.log(`👤 Пользователь ${userId} удален из активных (неактивен 15+ минут)`);
+  });
+  
+  if (inactiveUsers.length > 0) {
+    console.log(`🧹 Очищено ${inactiveUsers.length} неактивных пользователей`);
+  }
+}
+
+// Запускаем очистку каждые 5 минут
+setInterval(cleanupInactiveUsers, 5 * 60 * 1000);
+
 // Endpoint для получения данных от бота
 app.post('/api/bot/data', (req, res) => {
   try {
@@ -228,16 +257,16 @@ app.post('/api/bot/data', (req, res) => {
         // Для средней оценки заменяем значение
         botDataCache[type] = data;
         console.log(`📥 Получена средняя оценка от бота: ${data.average_rating}/5 (${data.total_reviews} отзывов)`);
-      } else if (type === 'reviews' || type === 'requests') {
-        // Для отзывов и заказов заменяем весь массив
+      } else if (type === 'reviews' || type === 'requests' || type === 'chat_messages' || type === 'chat_orders') {
+        // Для отзывов, заказов, сообщений чата и заказов чата заменяем весь массив
         botDataCache[type] = data;
-        console.log(`📥 Получены ${type} от бота: ${Array.isArray(data) ? data.length : 1} элементов`);
+        console.log(`📥 Получены ${type} от бота: ${Array.isArray(data) ? data.length : 1} элементов (полная замена)`);
       } else {
         // Для остальных типов проверяем, это пакет или отдельный элемент
         if (Array.isArray(data)) {
-          // Это пакет данных - добавляем все элементы
-          botDataCache[type].push(...data);
-          console.log(`📥 Получен пакет данных от бота: ${type} - ${data.length} элементов`);
+          // Это пакет данных - заменяем весь массив
+          botDataCache[type] = data;
+          console.log(`📥 Получен пакет данных от бота: ${type} - ${data.length} элементов (полная замена)`);
         } else {
           // Это отдельный элемент - добавляем его
           botDataCache[type].push(data);
@@ -255,6 +284,158 @@ app.post('/api/bot/data', (req, res) => {
     
   } catch (error) {
     console.error('❌ Ошибка получения данных от бота:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+});
+
+// Endpoint для получения данных пользователя от бота
+app.post('/api/bot/user-data', (req, res) => {
+  try {
+    const { user_id, data } = req.body;
+    
+    if (!user_id || !data) {
+      return res.status(400).json({
+        success: false,
+        error: 'Отсутствуют обязательные поля: user_id, data'
+      });
+    }
+    
+    // Обновляем данные пользователя в кэше
+    userDataCache.set(user_id, {
+      ...data,
+      lastUpdate: Date.now()
+    });
+    
+    // Обновляем активность пользователя
+    if (activeUsers.has(user_id)) {
+      activeUsers.get(user_id).lastSeen = Date.now();
+    }
+    
+    console.log(`📥 Получены данные пользователя ${user_id}: ${data.orders_count || 0} заказов, ${data.chat_messages_count || 0} сообщений`);
+    
+    res.json({
+      success: true,
+      message: 'Данные пользователя получены'
+    });
+    
+  } catch (error) {
+    console.error('❌ Ошибка получения данных пользователя от бота:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+});
+
+// Endpoint для регистрации активного пользователя
+app.post('/api/frontend/register-user', (req, res) => {
+  try {
+    const { user_id } = req.body;
+    
+    if (!user_id) {
+      return res.status(400).json({
+        success: false,
+        error: 'Отсутствует user_id'
+      });
+    }
+    
+    // Регистрируем пользователя как активного
+    activeUsers.set(user_id, {
+      lastSeen: Date.now(),
+      registeredAt: Date.now()
+    });
+    
+    console.log(`👤 Пользователь ${user_id} зарегистрирован как активный`);
+    
+    res.json({
+      success: true,
+      message: 'Пользователь зарегистрирован',
+      user_id: user_id
+    });
+    
+  } catch (error) {
+    console.error('❌ Ошибка регистрации пользователя:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+});
+
+// Endpoint для heartbeat (подтверждение активности)
+app.post('/api/frontend/heartbeat', (req, res) => {
+  try {
+    const { user_id } = req.body;
+    
+    if (!user_id) {
+      return res.status(400).json({
+        success: false,
+        error: 'Отсутствует user_id'
+      });
+    }
+    
+    // Обновляем активность пользователя
+    if (activeUsers.has(user_id)) {
+      activeUsers.get(user_id).lastSeen = Date.now();
+    }
+    
+    res.json({
+      success: true,
+      message: 'Heartbeat получен',
+      user_id: user_id
+    });
+    
+  } catch (error) {
+    console.error('❌ Ошибка heartbeat:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+});
+
+// Endpoint для получения данных пользователя
+app.get('/api/frontend/user-data/:user_id', (req, res) => {
+  try {
+    const { user_id } = req.params;
+    
+    if (!user_id) {
+      return res.status(400).json({
+        success: false,
+        error: 'Отсутствует user_id'
+      });
+    }
+    
+    // Проверяем, есть ли данные пользователя в кэше
+    if (userDataCache.has(user_id)) {
+      const userData = userDataCache.get(user_id);
+      
+      // Проверяем актуальность данных (не старше 5 минут)
+      const dataAge = Date.now() - userData.lastUpdate;
+      if (dataAge < 5 * 60 * 1000) {
+        console.log(`📤 Отправлены кэшированные данные пользователя ${user_id}`);
+        return res.json({
+          success: true,
+          data: userData,
+          fromCache: true,
+          dataAge: Math.round(dataAge / 1000)
+        });
+      }
+    }
+    
+    // Если данных нет или они устарели
+    console.log(`📭 Данные пользователя ${user_id} не найдены или устарели`);
+    res.json({
+      success: false,
+      error: 'Данные пользователя не найдены или устарели',
+      user_id: user_id
+    });
+    
+  } catch (error) {
+    console.error('❌ Ошибка получения данных пользователя:', error);
     res.status(500).json({
       success: false,
       error: error.message
