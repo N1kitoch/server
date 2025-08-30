@@ -206,6 +206,7 @@ let botDataCache = {
   reviews: [],
   support_requests: [],
   chat_messages: [],
+  chat_orders: [],
   average_rating: null
 };
 
@@ -302,6 +303,7 @@ app.get('/api/frontend/stats', async (req, res) => {
       reviews: botDataCache.reviews.length,
       support_requests: botDataCache.support_requests.length,
       chat_messages: botDataCache.chat_messages.length,
+      chat_orders: botDataCache.chat_orders.length,
       average_rating: botDataCache.average_rating ? botDataCache.average_rating.average_rating : 0,
       total_reviews: botDataCache.average_rating ? botDataCache.average_rating.total_reviews : 0
     };
@@ -344,6 +346,7 @@ app.post('/api/bot/clear-cache', (req, res) => {
         reviews: [],
         support_requests: [],
         chat_messages: [],
+        chat_orders: [],
         average_rating: null
       };
       console.log('🧹 Весь кэш очищен ботом');
