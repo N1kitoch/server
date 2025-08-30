@@ -2,11 +2,13 @@
 require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
+const compression = require('compression');
 
 const app = express();
 
 // Разрешаем CORS для фронтенда и Telegram
 app.use(cors());
+app.use(compression()); // Сжатие данных
 app.use(express.json());
 
 // Конфигурация бота
@@ -40,6 +42,23 @@ let botData = {
   support_requests: [],
   chat_messages: []
 };
+
+// Хранилище для SSE соединений
+let sseConnections = new Set();
+
+// Функция для отправки обновлений всем подключенным клиентам
+function sendSSEUpdate(data) {
+  const sseData = `data: ${JSON.stringify(data)}\n\n`;
+  
+  sseConnections.forEach(client => {
+    try {
+      client.res.write(sseData);
+    } catch (error) {
+      console.log('❌ Ошибка отправки SSE клиенту:', error.message);
+      sseConnections.delete(client);
+    }
+  });
+}
 
 // Функция для добавления данных от Mini App
 function addMiniAppData(payload, queryId = null) {
@@ -210,250 +229,6 @@ let botDataCache = {
   average_rating: null
 };
 
-// Система адаптивной синхронизации
-let activeUsers = new Map(); // Активные пользователи
-let userDataCache = new Map(); // Кэш данных пользователей
-
-// Система мгновенных обновлений (SSE)
-let sseClients = new Map(); // SSE соединения по user_id
-
-// Функция отправки мгновенных обновлений
-function sendRealTimeUpdate(userId, updateType, data) {
-  const client = sseClients.get(userId);
-  if (client) {
-    try {
-      const updateData = {
-        type: updateType,
-        data: data,
-        timestamp: Date.now()
-      };
-      
-      client.write(`data: ${JSON.stringify(updateData)}\n\n`);
-      console.log(`⚡ Мгновенное обновление отправлено пользователю ${userId}: ${updateType}`);
-      return true;
-    } catch (error) {
-      console.error(`❌ Ошибка отправки обновления пользователю ${userId}:`, error);
-      sseClients.delete(userId);
-      return false;
-    }
-  }
-  return false;
-}
-
-// SSE endpoint для мгновенных обновлений
-app.get('/api/frontend/events/:user_id', (req, res) => {
-  const userId = req.params.user_id;
-  
-  // Настройка SSE
-  res.writeHead(200, {
-    'Content-Type': 'text/event-stream',
-    'Cache-Control': 'no-cache',
-    'Connection': 'keep-alive',
-    'Access-Control-Allow-Origin': '*',
-    'Access-Control-Allow-Headers': 'Cache-Control'
-  });
-
-  // Добавляем клиента
-  sseClients.set(userId, res);
-  console.log(`📡 SSE подключение для пользователя ${userId}`);
-
-  // Отправляем приветственное сообщение
-  res.write(`data: ${JSON.stringify({
-    type: 'connected',
-    message: 'Мгновенные обновления подключены',
-    timestamp: Date.now()
-  })}\n\n`);
-
-  // Обработка закрытия соединения
-  req.on('close', () => {
-    sseClients.delete(userId);
-    console.log(`📡 SSE отключение для пользователя ${userId}`);
-  });
-
-  req.on('error', (error) => {
-    console.error(`❌ Ошибка SSE для пользователя ${userId}:`, error);
-    sseClients.delete(userId);
-  });
-});
-
-// Функция очистки неактивных пользователей
-function cleanupInactiveUsers() {
-  const cutoff = Date.now() - 15 * 60 * 1000; // 15 минут
-  const inactiveUsers = [];
-  
-  for (const [userId, userData] of activeUsers.entries()) {
-    if (userData.lastSeen < cutoff) {
-      inactiveUsers.push(userId);
-    }
-  }
-  
-  inactiveUsers.forEach(userId => {
-    activeUsers.delete(userId);
-    userDataCache.delete(userId);
-    sseClients.delete(userId); // Закрываем SSE соединения
-    console.log(`👤 Пользователь ${userId} удален из активных (неактивен 15+ минут)`);
-  });
-  
-  if (inactiveUsers.length > 0) {
-    console.log(`🧹 Очищено ${inactiveUsers.length} неактивных пользователей`);
-  }
-}
-
-// Функция очистки старых данных в кэше
-function cleanupOldData() {
-  const maxItemsPerType = 1000; // Максимум 1000 элементов на тип данных
-  const cutoffTime = Date.now() - 7 * 24 * 60 * 60 * 1000; // 7 дней
-  
-  Object.keys(botDataCache).forEach(type => {
-    if (Array.isArray(botDataCache[type])) {
-      const originalLength = botDataCache[type].length;
-      
-      // Фильтруем старые данные
-      botDataCache[type] = botDataCache[type].filter(item => {
-        const itemTime = new Date(item.timestamp || item.received_at || 0).getTime();
-        return itemTime > cutoffTime;
-      });
-      
-      // Ограничиваем количество элементов
-      if (botDataCache[type].length > maxItemsPerType) {
-        botDataCache[type] = botDataCache[type].slice(-maxItemsPerType);
-      }
-      
-      const removedCount = originalLength - botDataCache[type].length;
-      if (removedCount > 0) {
-        console.log(`🧹 Очищено ${removedCount} старых элементов из ${type}`);
-      }
-    }
-  });
-}
-
-// Функция для удаления дубликатов в кэше
-function removeDuplicates() {
-  Object.keys(botDataCache).forEach(type => {
-    if (Array.isArray(botDataCache[type])) {
-      const originalLength = botDataCache[type].length;
-      
-      // Создаем Map для удаления дубликатов по ID
-      const uniqueMap = new Map();
-      botDataCache[type].forEach(item => {
-        if (item.id !== undefined) {
-          // Если элемент с таким ID уже есть, берем более новый
-          if (uniqueMap.has(item.id)) {
-            const existingItem = uniqueMap.get(item.id);
-            const existingTime = new Date(existingItem.timestamp || existingItem.received_at || 0).getTime();
-            const newTime = new Date(item.timestamp || item.received_at || 0).getTime();
-            
-            if (newTime > existingTime) {
-              uniqueMap.set(item.id, item);
-            }
-          } else {
-            uniqueMap.set(item.id, item);
-          }
-        } else {
-          // Для элементов без ID добавляем их в конец
-          uniqueMap.set(`no_id_${Date.now()}_${Math.random()}`, item);
-        }
-      });
-      
-      botDataCache[type] = Array.from(uniqueMap.values());
-      
-      const removedCount = originalLength - botDataCache[type].length;
-      if (removedCount > 0) {
-        console.log(`🧹 Удалено ${removedCount} дубликатов из ${type}`);
-      }
-    }
-  });
-}
-
-// Функция для получения статистики кэша
-function getCacheStats() {
-  const stats = {};
-  Object.keys(botDataCache).forEach(type => {
-    if (Array.isArray(botDataCache[type])) {
-      stats[type] = {
-        count: botDataCache[type].length,
-        hasDuplicates: false
-      };
-      
-      // Проверяем дубликаты
-      const ids = botDataCache[type].map(item => item.id).filter(id => id !== undefined);
-      const uniqueIds = new Set(ids);
-      if (ids.length !== uniqueIds.size) {
-        stats[type].hasDuplicates = true;
-        stats[type].duplicateCount = ids.length - uniqueIds.size;
-      }
-    } else {
-      stats[type] = { count: 1, type: typeof botDataCache[type] };
-    }
-  });
-  return stats;
-}
-
-// Запускаем очистку каждые 5 минут
-setInterval(cleanupInactiveUsers, 5 * 60 * 1000);
-// Запускаем очистку старых данных каждые 30 минут
-setInterval(cleanupOldData, 30 * 60 * 1000);
-// Запускаем удаление дубликатов каждые 10 минут
-setInterval(removeDuplicates, 10 * 60 * 1000);
-
-// Endpoint для проверки статистики кэша
-app.get('/api/admin/cache-stats', (req, res) => {
-  try {
-    const stats = getCacheStats();
-    const activeUsersCount = activeUsers.size;
-    const userDataCount = userDataCache.size;
-    const sseConnectionsCount = sseClients.size;
-    
-    res.json({
-      success: true,
-      cache_stats: stats,
-      active_users: activeUsersCount,
-      user_data_cache: userDataCount,
-      sse_connections: sseConnectionsCount,
-      timestamp: new Date().toISOString()
-    });
-  } catch (error) {
-    console.error('❌ Ошибка получения статистики кэша:', error);
-    res.status(500).json({
-      success: false,
-      error: error.message
-    });
-  }
-});
-
-// Endpoint для принудительной очистки дубликатов
-app.post('/api/admin/remove-duplicates', (req, res) => {
-  try {
-    const beforeStats = getCacheStats();
-    removeDuplicates();
-    const afterStats = getCacheStats();
-    
-    const removedCounts = {};
-    Object.keys(beforeStats).forEach(type => {
-      if (beforeStats[type].count && afterStats[type].count) {
-        const removed = beforeStats[type].count - afterStats[type].count;
-        if (removed > 0) {
-          removedCounts[type] = removed;
-        }
-      }
-    });
-    
-    res.json({
-      success: true,
-      message: 'Дубликаты удалены',
-      removed_counts: removedCounts,
-      before_stats: beforeStats,
-      after_stats: afterStats
-    });
-  } catch (error) {
-    console.error('❌ Ошибка удаления дубликатов:', error);
-    res.status(500).json({
-      success: false,
-      error: error.message
-    });
-  }
-});
-
 // Endpoint для получения данных от бота
 app.post('/api/bot/data', (req, res) => {
   try {
@@ -473,120 +248,30 @@ app.post('/api/bot/data', (req, res) => {
         botDataCache[type] = data;
         console.log(`📥 Получена средняя оценка от бота: ${data.average_rating}/5 (${data.total_reviews} отзывов)`);
       } else if (type === 'reviews' || type === 'requests' || type === 'chat_messages' || type === 'chat_orders') {
-        // Для отзывов, заказов, сообщений чата и заказов чата ОБЪЕДИНЯЕМ данные
-        if (Array.isArray(data)) {
-          if (Array.isArray(botDataCache[type])) {
-            // Создаем Map для быстрого поиска существующих элементов
-            const existingMap = new Map();
-            botDataCache[type].forEach(item => {
-              if (item.id !== undefined) {
-                existingMap.set(item.id, item);
-              }
-            });
-            
-            // Фильтруем новые элементы
-            const newItems = [];
-            const duplicateIds = [];
-            
-            data.forEach(item => {
-              if (item.id !== undefined) {
-                if (existingMap.has(item.id)) {
-                  duplicateIds.push(item.id);
-                  // Обновляем существующий элемент, если данные изменились
-                  const existingItem = existingMap.get(item.id);
-                  if (JSON.stringify(existingItem) !== JSON.stringify(item)) {
-                    existingMap.set(item.id, item);
-                    console.log(`🔄 Обновлен элемент ${type} с ID ${item.id}`);
-                  }
-                } else {
-                  newItems.push(item);
-                }
-              } else {
-                // Если у элемента нет ID, добавляем его
-                newItems.push(item);
-              }
-            });
-            
-            // Обновляем кэш с новыми и обновленными элементами
-            botDataCache[type] = Array.from(existingMap.values());
-            
-            if (newItems.length > 0) {
-              botDataCache[type] = [...botDataCache[type], ...newItems];
-              console.log(`📥 Объединены ${type} от бота: добавлено ${newItems.length} новых элементов из ${data.length}`);
-            }
-            
-            if (duplicateIds.length > 0) {
-              console.log(`🔄 Найдено ${duplicateIds.length} дубликатов в ${type}: ${duplicateIds.slice(0, 5).join(', ')}${duplicateIds.length > 5 ? '...' : ''}`);
-            }
-            
-            console.log(`📊 Итого в кэше ${type}: ${botDataCache[type].length} элементов`);
-          } else {
-            // Если кэш пустой, просто копируем данные
-            botDataCache[type] = [...data];
-            console.log(`📥 Инициализированы ${type} от бота: ${data.length} элементов`);
-          }
-        } else {
-          // Если это не массив, заменяем
-          botDataCache[type] = data;
-          console.log(`📥 Заменены ${type} от бота: ${typeof data}`);
-        }
+        // Для отзывов, заказов, сообщений чата и заказов чата заменяем весь массив
+        botDataCache[type] = data;
+        console.log(`📥 Получены ${type} от бота: ${Array.isArray(data) ? data.length : 1} элементов (полная замена)`);
       } else {
         // Для остальных типов проверяем, это пакет или отдельный элемент
         if (Array.isArray(data)) {
-          // Это пакет данных - объединяем с существующими
-          if (Array.isArray(botDataCache[type])) {
-            const existingMap = new Map();
-            botDataCache[type].forEach(item => {
-              if (item.id !== undefined) {
-                existingMap.set(item.id, item);
-              }
-            });
-            
-            const newItems = [];
-            data.forEach(item => {
-              if (item.id !== undefined) {
-                if (existingMap.has(item.id)) {
-                  // Обновляем существующий элемент
-                  existingMap.set(item.id, item);
-                } else {
-                  newItems.push(item);
-                }
-              } else {
-                newItems.push(item);
-              }
-            });
-            
-            botDataCache[type] = Array.from(existingMap.values());
-            
-            if (newItems.length > 0) {
-              botDataCache[type] = [...botDataCache[type], ...newItems];
-              console.log(`📥 Объединен пакет данных от бота: ${type} - добавлено ${newItems.length} новых элементов из ${data.length}`);
-            } else {
-              console.log(`📥 Пакет данных от бота: ${type} - все ${data.length} элементов уже существуют`);
-            }
-          } else {
-            botDataCache[type] = [...data];
-            console.log(`📥 Инициализирован пакет данных от бота: ${type} - ${data.length} элементов`);
-          }
+          // Это пакет данных - заменяем весь массив
+          botDataCache[type] = data;
+          console.log(`📥 Получен пакет данных от бота: ${type} - ${data.length} элементов (полная замена)`);
         } else {
           // Это отдельный элемент - добавляем его
-          if (Array.isArray(botDataCache[type])) {
-            // Проверяем, нет ли уже такого элемента
-            const existingIndex = botDataCache[type].findIndex(item => item.id === data.id);
-            if (existingIndex === -1) {
-              botDataCache[type].push(data);
-              console.log(`📥 Добавлен новый элемент от бота: ${type}`);
-            } else {
-              // Обновляем существующий элемент
-              botDataCache[type][existingIndex] = data;
-              console.log(`📥 Обновлен существующий элемент от бота: ${type}, ID: ${data.id}`);
-            }
-          } else {
-            botDataCache[type] = [data];
-            console.log(`📥 Инициализирован элемент от бота: ${type}`);
-          }
+          botDataCache[type].push(data);
+          console.log(`📥 Получены данные от бота: ${type}`);
         }
       }
+      
+      // Отправляем SSE обновление всем подключенным клиентам
+      sendSSEUpdate({
+        type: 'data_update',
+        dataType: type,
+        data: data,
+        timestamp: new Date().toISOString()
+      });
+      
     } else {
       console.log(`⚠️ Неизвестный тип данных от бота: ${type}`);
     }
@@ -598,298 +283,6 @@ app.post('/api/bot/data', (req, res) => {
     
   } catch (error) {
     console.error('❌ Ошибка получения данных от бота:', error);
-    res.status(500).json({
-      success: false,
-      error: error.message
-    });
-  }
-});
-
-// Endpoint для получения данных пользователя от бота
-app.post('/api/bot/user-data', (req, res) => {
-  try {
-    const { user_id, data } = req.body;
-    
-    if (!user_id || !data) {
-      return res.status(400).json({
-        success: false,
-        error: 'Отсутствуют обязательные поля: user_id, data'
-      });
-    }
-    
-    // Получаем старые данные для сравнения
-    const oldData = userDataCache.get(user_id);
-    
-    // Обновляем данные пользователя в кэше
-    userDataCache.set(user_id, {
-      ...data,
-      lastUpdate: Date.now()
-    });
-    
-    // Обновляем активность пользователя
-    if (activeUsers.has(user_id)) {
-      activeUsers.get(user_id).lastSeen = Date.now();
-    }
-    
-    // Проверяем изменения и отправляем мгновенные обновления
-    if (oldData) {
-      // Проверяем новые заказы
-      const oldOrdersCount = oldData.orders_count || 0;
-      const newOrdersCount = data.orders_count || 0;
-      if (newOrdersCount > oldOrdersCount) {
-        console.log(`🆕 Обнаружено ${newOrdersCount - oldOrdersCount} новых заказов для пользователя ${user_id}`);
-        sendRealTimeUpdate(user_id, 'new_orders', {
-          count: newOrdersCount - oldOrdersCount,
-          orders: data.orders,
-          total_orders: newOrdersCount
-        });
-      }
-      
-      // Проверяем новые сообщения
-      const oldMessagesCount = oldData.chat_messages_count || 0;
-      const newMessagesCount = data.chat_messages_count || 0;
-      if (newMessagesCount > oldMessagesCount) {
-        console.log(`🆕 Обнаружено ${newMessagesCount - oldMessagesCount} новых сообщений для пользователя ${user_id}`);
-        sendRealTimeUpdate(user_id, 'new_messages', {
-          count: newMessagesCount - oldMessagesCount,
-          messages: data.chat_messages,
-          total_messages: newMessagesCount
-        });
-      }
-      
-      // Проверяем изменения статуса заказов
-      if (data.orders && oldData.orders) {
-        const statusChanges = [];
-        data.orders.forEach(newOrder => {
-          const oldOrder = oldData.orders.find(o => o.id === newOrder.id);
-          if (oldOrder && oldOrder.status !== newOrder.status) {
-            statusChanges.push({
-              order_id: newOrder.id,
-              old_status: oldOrder.status,
-              new_status: newOrder.status,
-              service: newOrder.service_name
-            });
-          }
-        });
-        
-        if (statusChanges.length > 0) {
-          console.log(`🔄 Обнаружено ${statusChanges.length} изменений статуса заказов для пользователя ${user_id}`);
-          sendRealTimeUpdate(user_id, 'status_changes', {
-            changes: statusChanges,
-            count: statusChanges.length
-          });
-        }
-      }
-    } else {
-      // Первая загрузка данных - отправляем уведомление о готовности
-      console.log(`🎉 Первая загрузка данных для пользователя ${user_id}`);
-      sendRealTimeUpdate(user_id, 'data_ready', {
-        orders_count: data.orders_count || 0,
-        messages_count: data.chat_messages_count || 0,
-        message: 'Данные загружены и готовы к использованию'
-      });
-    }
-    
-    console.log(`📥 Получены данные пользователя ${user_id}: ${data.orders_count || 0} заказов, ${data.chat_messages_count || 0} сообщений`);
-    
-    res.json({
-      success: true,
-      message: 'Данные пользователя получены'
-    });
-    
-  } catch (error) {
-    console.error('❌ Ошибка получения данных пользователя от бота:', error);
-    res.status(500).json({
-      success: false,
-      error: error.message
-    });
-  }
-});
-
-// Endpoint для регистрации активного пользователя
-app.post('/api/frontend/register-user', (req, res) => {
-  try {
-    const { user_id } = req.body;
-    
-    if (!user_id) {
-      return res.status(400).json({
-        success: false,
-        error: 'Отсутствует user_id'
-      });
-    }
-    
-    // Регистрируем пользователя как активного
-    activeUsers.set(user_id, {
-      lastSeen: Date.now(),
-      registeredAt: Date.now()
-    });
-    
-    console.log(`👤 Пользователь ${user_id} зарегистрирован как активный`);
-    
-    // Отправляем сигнал боту для немедленной загрузки данных пользователя
-    if (user_id !== 'unknown') {
-      console.log(`🚀 Запрос немедленной загрузки данных для пользователя ${user_id}`);
-      // Бот получит этот сигнал при следующем обращении к /api/bot/pending
-    }
-    
-    res.json({
-      success: true,
-      message: 'Пользователь зарегистрирован',
-      user_id: user_id,
-      immediate_load_requested: user_id !== 'unknown'
-    });
-    
-  } catch (error) {
-    console.error('❌ Ошибка регистрации пользователя:', error);
-    res.status(500).json({
-      success: false,
-      error: error.message
-    });
-  }
-});
-
-// Endpoint для запроса немедленной загрузки данных пользователя
-app.post('/api/frontend/request-immediate-load', (req, res) => {
-  try {
-    const { user_id } = req.body;
-    
-    if (!user_id) {
-      return res.status(400).json({
-        success: false,
-        error: 'Отсутствует user_id'
-      });
-    }
-    
-    // Регистрируем пользователя как активного если не зарегистрирован
-    if (!activeUsers.has(user_id)) {
-      activeUsers.set(user_id, {
-        lastSeen: Date.now(),
-        registeredAt: Date.now()
-      });
-    } else {
-      activeUsers.get(user_id).lastSeen = Date.now();
-    }
-    
-    console.log(`⚡ Запрос немедленной загрузки данных для пользователя ${user_id}`);
-    
-    res.json({
-      success: true,
-      message: 'Запрос немедленной загрузки принят',
-      user_id: user_id
-    });
-    
-  } catch (error) {
-    console.error('❌ Ошибка запроса немедленной загрузки:', error);
-    res.status(500).json({
-      success: false,
-      error: error.message
-    });
-  }
-});
-
-// Endpoint для получения списка активных пользователей (для бота)
-app.get('/api/bot/active-users', (req, res) => {
-  try {
-    const activeUsersList = [];
-    
-    for (const [userId, userData] of activeUsers.entries()) {
-      activeUsersList.push({
-        user_id: userId,
-        lastSeen: userData.lastSeen,
-        registeredAt: userData.registeredAt,
-        isActive: (Date.now() - userData.lastSeen) < 15 * 60 * 1000 // Активен если был онлайн последние 15 минут
-      });
-    }
-    
-    console.log(`📊 Запрос активных пользователей: ${activeUsersList.length} пользователей`);
-    
-    res.json({
-      success: true,
-      active_users: activeUsersList,
-      count: activeUsersList.length,
-      timestamp: Date.now()
-    });
-    
-  } catch (error) {
-    console.error('❌ Ошибка получения активных пользователей:', error);
-    res.status(500).json({
-      success: false,
-      error: error.message
-    });
-  }
-});
-
-// Endpoint для heartbeat (подтверждение активности)
-app.post('/api/frontend/heartbeat', (req, res) => {
-  try {
-    const { user_id } = req.body;
-    
-    if (!user_id) {
-      return res.status(400).json({
-        success: false,
-        error: 'Отсутствует user_id'
-      });
-    }
-    
-    // Обновляем активность пользователя
-    if (activeUsers.has(user_id)) {
-      activeUsers.get(user_id).lastSeen = Date.now();
-    }
-    
-    res.json({
-      success: true,
-      message: 'Heartbeat получен',
-      user_id: user_id
-    });
-    
-  } catch (error) {
-    console.error('❌ Ошибка heartbeat:', error);
-    res.status(500).json({
-      success: false,
-      error: error.message
-    });
-  }
-});
-
-// Endpoint для получения данных пользователя
-app.get('/api/frontend/user-data/:user_id', (req, res) => {
-  try {
-    const { user_id } = req.params;
-    
-    if (!user_id) {
-      return res.status(400).json({
-        success: false,
-        error: 'Отсутствует user_id'
-      });
-    }
-    
-    // Проверяем, есть ли данные пользователя в кэше
-    if (userDataCache.has(user_id)) {
-      const userData = userDataCache.get(user_id);
-      
-      // Проверяем актуальность данных (не старше 5 минут)
-      const dataAge = Date.now() - userData.lastUpdate;
-      if (dataAge < 5 * 60 * 1000) {
-        console.log(`📤 Отправлены кэшированные данные пользователя ${user_id}`);
-        return res.json({
-          success: true,
-          data: userData,
-          fromCache: true,
-          dataAge: Math.round(dataAge / 1000)
-        });
-      }
-    }
-    
-    // Если данных нет или они устарели
-    console.log(`📭 Данные пользователя ${user_id} не найдены или устарели`);
-    res.json({
-      success: false,
-      error: 'Данные пользователя не найдены или устарели',
-      user_id: user_id
-    });
-    
-  } catch (error) {
-    console.error('❌ Ошибка получения данных пользователя:', error);
     res.status(500).json({
       success: false,
       error: error.message
@@ -1074,12 +467,50 @@ app.post('/api/event', async (req, res) => {
   }
 });
 
+// Server-Sent Events endpoint для real-time обновлений
+app.get('/api/sse', (req, res) => {
+  // Настраиваем заголовки для SSE
+  res.writeHead(200, {
+    'Content-Type': 'text/event-stream',
+    'Cache-Control': 'no-cache',
+    'Connection': 'keep-alive',
+    'Access-Control-Allow-Origin': '*',
+    'Access-Control-Allow-Headers': 'Cache-Control'
+  });
+
+  // Отправляем начальное сообщение
+  res.write(`data: ${JSON.stringify({
+    type: 'connection',
+    message: 'SSE соединение установлено',
+    timestamp: new Date().toISOString()
+  })}\n\n`);
+
+  // Добавляем клиента в список подключений
+  const client = { res, id: Date.now() };
+  sseConnections.add(client);
+
+  console.log(`📡 SSE клиент подключен (ID: ${client.id}). Всего клиентов: ${sseConnections.size}`);
+
+  // Обработка отключения клиента
+  req.on('close', () => {
+    sseConnections.delete(client);
+    console.log(`📡 SSE клиент отключен (ID: ${client.id}). Всего клиентов: ${sseConnections.size}`);
+  });
+
+  // Обработка ошибок
+  req.on('error', (error) => {
+    console.log(`❌ Ошибка SSE соединения (ID: ${client.id}):`, error.message);
+    sseConnections.delete(client);
+  });
+});
+
 // Проверка состояния сервера
 app.get('/health', (req, res) => {
   res.json({
     ok: true,
     timestamp: new Date().toISOString(),
-    message: 'Backend работает как посредник'
+    message: 'Backend работает как посредник',
+    sseConnections: sseConnections.size
   });
 });
 
@@ -1122,6 +553,6 @@ app.listen(PORT, HOST, () => {
   console.log(`📍 URL: https://server-iyp2.onrender.com`);
   console.log(`🤖 Bot Token: ${BOT_TOKEN ? '✅ Настроен' : '❌ Не настроен'}`);
   console.log(`👤 Admin ID: ${ADMIN_ID}`);
-  console.log(`📡 Режим: Хранилище данных для бота с мгновенными обновлениями`);
-  console.log(`📊 Endpoints: /api/bot/data, /api/bot/process, /api/frontend/events`);
+  console.log(`📡 Режим: Хранилище данных для бота`);
+  console.log(`📊 Endpoints: /api/bot/data, /api/bot/process`);
 });
