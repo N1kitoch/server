@@ -60,6 +60,38 @@ function sendSSEUpdate(data) {
   });
 }
 
+// SSE endpoint для мгновенной передачи данных боту
+app.get('/events', (req, res) => {
+  console.log('🔄 Новое SSE соединение от бота');
+  
+  // Настраиваем заголовки для SSE
+  res.writeHead(200, {
+    'Content-Type': 'text/event-stream',
+    'Cache-Control': 'no-cache',
+    'Connection': 'keep-alive',
+    'Access-Control-Allow-Origin': '*',
+    'Access-Control-Allow-Headers': 'Cache-Control'
+  });
+  
+  // Отправляем начальное сообщение
+  res.write('data: {"type": "connected", "message": "SSE соединение установлено"}\n\n');
+  
+  // Добавляем клиента в список подключений
+  const client = { res, id: Date.now() };
+  sseConnections.add(client);
+  
+  // Обработка отключения клиента
+  req.on('close', () => {
+    console.log('🔌 SSE соединение закрыто');
+    sseConnections.delete(client);
+  });
+  
+  req.on('error', (error) => {
+    console.log('❌ Ошибка SSE соединения:', error.message);
+    sseConnections.delete(client);
+  });
+});
+
 // Функция для добавления данных от Mini App
 function addMiniAppData(payload, queryId = null) {
   const dataEntry = {
@@ -74,7 +106,35 @@ function addMiniAppData(payload, queryId = null) {
   miniAppData.lastUpdate = new Date().toISOString();
   
   console.log(`📝 Данные добавлены в очередь: ${dataEntry.id}`);
+  
+  // Отправляем мгновенное уведомление боту через SSE
+  const sseNotification = {
+    type: getSSENotificationType(payload.type),
+    payload: {
+      id: dataEntry.id,
+      timestamp: dataEntry.timestamp,
+      ...payload
+    }
+  };
+  
+  sendSSEUpdate(sseNotification);
+  console.log(`📡 SSE уведомление отправлено: ${sseNotification.type}`);
+  
   return dataEntry.id;
+}
+
+// Функция для определения типа SSE уведомления
+function getSSENotificationType(payloadType) {
+  switch (payloadType) {
+    case 'chat_message':
+      return 'new_chat_message';
+    case 'service_interest':
+      return 'new_order';
+    case 'review_submit':
+      return 'new_review';
+    default:
+      return 'new_data';
+  }
 }
 
 // Функция ответа на WebApp Query
