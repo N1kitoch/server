@@ -60,38 +60,6 @@ function sendSSEUpdate(data) {
   });
 }
 
-// SSE endpoint для мгновенной передачи данных боту
-app.get('/events', (req, res) => {
-  console.log('🔄 Новое SSE соединение от бота');
-  
-  // Настраиваем заголовки для SSE
-  res.writeHead(200, {
-    'Content-Type': 'text/event-stream',
-    'Cache-Control': 'no-cache',
-    'Connection': 'keep-alive',
-    'Access-Control-Allow-Origin': '*',
-    'Access-Control-Allow-Headers': 'Cache-Control'
-  });
-  
-  // Отправляем начальное сообщение
-  res.write('data: {"type": "connected", "message": "SSE соединение установлено"}\n\n');
-  
-  // Добавляем клиента в список подключений
-  const client = { res, id: Date.now() };
-  sseConnections.add(client);
-  
-  // Обработка отключения клиента
-  req.on('close', () => {
-    console.log('🔌 SSE соединение закрыто');
-    sseConnections.delete(client);
-  });
-  
-  req.on('error', (error) => {
-    console.log('❌ Ошибка SSE соединения:', error.message);
-    sseConnections.delete(client);
-  });
-});
-
 // Функция для добавления данных от Mini App
 function addMiniAppData(payload, queryId = null) {
   const dataEntry = {
@@ -106,35 +74,7 @@ function addMiniAppData(payload, queryId = null) {
   miniAppData.lastUpdate = new Date().toISOString();
   
   console.log(`📝 Данные добавлены в очередь: ${dataEntry.id}`);
-  
-  // Отправляем мгновенное уведомление боту через SSE
-  const sseNotification = {
-    type: getSSENotificationType(payload.type),
-    payload: {
-      id: dataEntry.id,
-      timestamp: dataEntry.timestamp,
-      ...payload
-    }
-  };
-  
-  sendSSEUpdate(sseNotification);
-  console.log(`📡 SSE уведомление отправлено: ${sseNotification.type}`);
-  
   return dataEntry.id;
-}
-
-// Функция для определения типа SSE уведомления
-function getSSENotificationType(payloadType) {
-  switch (payloadType) {
-    case 'chat_message':
-      return 'new_chat_message';
-    case 'service_interest':
-      return 'new_order';
-    case 'review_submit':
-      return 'new_review';
-    default:
-      return 'new_data';
-  }
 }
 
 // Функция ответа на WebApp Query
@@ -307,8 +247,19 @@ app.post('/api/bot/data', (req, res) => {
         // Для средней оценки заменяем значение
         botDataCache[type] = data;
         console.log(`📥 Получена средняя оценка от бота: ${data.average_rating}/5 (${data.total_reviews} отзывов)`);
-      } else if (type === 'reviews' || type === 'requests' || type === 'chat_messages' || type === 'chat_orders') {
-        // Для отзывов, заказов, сообщений чата и заказов чата заменяем весь массив
+      } else if (type === 'full_sync') {
+        // Полная синхронизация - заменяем все данные
+        if (data.requests) botDataCache.requests = data.requests;
+        if (data.chat_messages) botDataCache.chat_messages = data.chat_messages;
+        if (data.chat_orders) botDataCache.chat_orders = data.chat_orders;
+        if (data.reviews) botDataCache.reviews = data.reviews;
+        if (data.messages) botDataCache.messages = data.messages;
+        if (data.errors) botDataCache.errors = data.errors;
+        if (data.support_requests) botDataCache.support_requests = data.support_requests;
+        if (data.average_rating) botDataCache.average_rating = data.average_rating;
+        console.log(`🔄 Полная синхронизация данных от бота завершена`);
+      } else if (type === 'reviews' || type === 'requests' || type === 'chat_messages' || type === 'chat_orders' || type === 'messages' || type === 'errors' || type === 'support_requests') {
+        // Для всех основных типов данных заменяем весь массив
         botDataCache[type] = data;
         console.log(`📥 Получены ${type} от бота: ${Array.isArray(data) ? data.length : 1} элементов (полная замена)`);
       } else {
@@ -325,12 +276,21 @@ app.post('/api/bot/data', (req, res) => {
       }
       
       // Отправляем SSE обновление всем подключенным клиентам
-      sendSSEUpdate({
-        type: 'data_update',
-        dataType: type,
-        data: data,
-        timestamp: new Date().toISOString()
-      });
+      if (type === 'full_sync') {
+        // Для полной синхронизации отправляем обновление для всех типов данных
+        sendSSEUpdate({
+          type: 'full_sync_complete',
+          data: data,
+          timestamp: new Date().toISOString()
+        });
+      } else {
+        sendSSEUpdate({
+          type: 'data_update',
+          dataType: type,
+          data: data,
+          timestamp: new Date().toISOString()
+        });
+      }
       
     } else {
       console.log(`⚠️ Неизвестный тип данных от бота: ${type}`);
