@@ -242,22 +242,22 @@ app.post('/api/bot/data', (req, res) => {
     }
     
     // Добавляем данные в кэш
-    if (botDataCache[type] !== undefined) {
+    if (type === 'full_sync') {
+      // Полная синхронизация - заменяем все данные
+      if (data.requests) botDataCache.requests = data.requests;
+      if (data.chat_messages) botDataCache.chat_messages = data.chat_messages;
+      if (data.chat_orders) botDataCache.chat_orders = data.chat_orders;
+      if (data.reviews) botDataCache.reviews = data.reviews;
+      if (data.messages) botDataCache.messages = data.messages;
+      if (data.errors) botDataCache.errors = data.errors;
+      if (data.support_requests) botDataCache.support_requests = data.support_requests;
+      if (data.average_rating) botDataCache.average_rating = data.average_rating;
+      console.log(`🔄 Полная синхронизация данных от бота завершена`);
+    } else if (botDataCache[type] !== undefined) {
       if (type === 'average_rating') {
         // Для средней оценки заменяем значение
         botDataCache[type] = data;
         console.log(`📥 Получена средняя оценка от бота: ${data.average_rating}/5 (${data.total_reviews} отзывов)`);
-      } else if (type === 'full_sync') {
-        // Полная синхронизация - заменяем все данные
-        if (data.requests) botDataCache.requests = data.requests;
-        if (data.chat_messages) botDataCache.chat_messages = data.chat_messages;
-        if (data.chat_orders) botDataCache.chat_orders = data.chat_orders;
-        if (data.reviews) botDataCache.reviews = data.reviews;
-        if (data.messages) botDataCache.messages = data.messages;
-        if (data.errors) botDataCache.errors = data.errors;
-        if (data.support_requests) botDataCache.support_requests = data.support_requests;
-        if (data.average_rating) botDataCache.average_rating = data.average_rating;
-        console.log(`🔄 Полная синхронизация данных от бота завершена`);
       } else if (type === 'reviews' || type === 'requests' || type === 'chat_messages' || type === 'chat_orders' || type === 'messages' || type === 'errors' || type === 'support_requests') {
         // Для всех основных типов данных заменяем весь массив
         botDataCache[type] = data;
