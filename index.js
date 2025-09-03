@@ -370,6 +370,225 @@ app.get('/api/frontend/stats', async (req, res) => {
   }
 });
 
+// Endpoint для изменения статуса заказа (CRM)
+app.post('/api/frontend/order/status', async (req, res) => {
+  try {
+    const { orderId, newStatus, comment } = req.body;
+    
+    if (!orderId || !newStatus) {
+      return res.status(400).json({
+        success: false,
+        error: 'Отсутствуют обязательные поля: orderId, newStatus'
+      });
+    }
+    
+    // Находим заказ в кэше
+    const orderIndex = botDataCache.requests.findIndex(order => order.id == orderId);
+    
+    if (orderIndex === -1) {
+      return res.status(404).json({
+        success: false,
+        error: 'Заказ не найден'
+      });
+    }
+    
+    // Обновляем статус
+    const oldStatus = botDataCache.requests[orderIndex].status;
+    botDataCache.requests[orderIndex].status = newStatus;
+    
+    // Добавляем комментарий если есть
+    if (comment) {
+      botDataCache.requests[orderIndex].admin_comment = comment;
+      
+      if (!botDataCache.requests[orderIndex].status_history) {
+        botDataCache.requests[orderIndex].status_history = [];
+      }
+      botDataCache.requests[orderIndex].status_history.push({
+        status: newStatus,
+        comment: comment,
+        timestamp: new Date().toISOString(),
+        changed_by: 'admin'
+      });
+    }
+    
+    console.log(`📋 Статус заказа #${orderId} изменен: ${oldStatus} → ${newStatus}`);
+    
+    // Отправляем SSE обновление
+    sendSSEUpdate({
+      type: 'order_status_changed',
+      orderId: orderId,
+      oldStatus: oldStatus,
+      newStatus: newStatus,
+      comment: comment,
+      timestamp: new Date().toISOString()
+    });
+    
+    res.json({
+      success: true,
+      message: `Статус заказа #${orderId} изменен на "${newStatus}"`,
+      order: botDataCache.requests[orderIndex]
+    });
+    
+  } catch (error) {
+    console.error('❌ Ошибка изменения статуса заказа:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+});
+
+// Endpoint для отметки сообщения как обработанного (CRM)
+app.post('/api/frontend/message/process', async (req, res) => {
+  try {
+    const { messageId } = req.body;
+    
+    if (!messageId) {
+      return res.status(400).json({
+        success: false,
+        error: 'Отсутствует обязательное поле: messageId'
+      });
+    }
+    
+    // Находим сообщение в кэше
+    const messageIndex = botDataCache.messages.findIndex(msg => msg.id == messageId);
+    
+    if (messageIndex === -1) {
+      return res.status(404).json({
+        success: false,
+        error: 'Сообщение не найдено'
+      });
+    }
+    
+    // Отмечаем как обработанное
+    botDataCache.messages[messageIndex].processed = true;
+    botDataCache.messages[messageIndex].processed_at = new Date().toISOString();
+    
+    console.log(`💬 Сообщение #${messageId} отмечено как обработанное`);
+    
+    // Отправляем SSE обновление
+    sendSSEUpdate({
+      type: 'message_processed',
+      messageId: messageId,
+      timestamp: new Date().toISOString()
+    });
+    
+    res.json({
+      success: true,
+      message: `Сообщение #${messageId} отмечено как обработанное`,
+      message: botDataCache.messages[messageIndex]
+    });
+    
+  } catch (error) {
+    console.error('❌ Ошибка обработки сообщения:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+});
+
+// Endpoint для отметки запроса поддержки как обработанного (CRM)
+app.post('/api/frontend/support/process', async (req, res) => {
+  try {
+    const { supportId } = req.body;
+    
+    if (!supportId) {
+      return res.status(400).json({
+        success: false,
+        error: 'Отсутствует обязательное поле: supportId'
+      });
+    }
+    
+    // Находим запрос поддержки в кэше
+    const supportIndex = botDataCache.support_requests.findIndex(support => support.id == supportId);
+    
+    if (supportIndex === -1) {
+      return res.status(404).json({
+        success: false,
+        error: 'Запрос поддержки не найден'
+      });
+    }
+    
+    // Отмечаем как обработанный
+    botDataCache.support_requests[supportIndex].processed = true;
+    botDataCache.support_requests[supportIndex].processed_at = new Date().toISOString();
+    
+    console.log(`🆘 Запрос поддержки #${supportId} отмечен как обработанный`);
+    
+    // Отправляем SSE обновление
+    sendSSEUpdate({
+      type: 'support_processed',
+      supportId: supportId,
+      timestamp: new Date().toISOString()
+    });
+    
+    res.json({
+      success: true,
+      message: `Запрос поддержки #${supportId} отмечен как обработанный`,
+      support: botDataCache.support_requests[supportIndex]
+    });
+    
+  } catch (error) {
+    console.error('❌ Ошибка обработки запроса поддержки:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+});
+
+// Endpoint для отправки сообщения от администратора (CRM)
+app.post('/api/frontend/chat/admin-message', async (req, res) => {
+  try {
+    const { orderId, message } = req.body;
+    
+    if (!orderId || !message) {
+      return res.status(400).json({
+        success: false,
+        error: 'Отсутствуют обязательные поля: orderId, message'
+      });
+    }
+    
+    // Создаем новое сообщение от администратора
+    const adminMessage = {
+      id: Date.now(),
+      order_id: orderId,
+      message: message,
+      is_admin: true,
+      timestamp: new Date().toISOString(),
+      username: 'Администратор',
+      first_name: 'Администратор'
+    };
+    
+    // Добавляем в кэш
+    botDataCache.chat_messages.push(adminMessage);
+    
+    console.log(`💬 Администратор отправил сообщение для заказа #${orderId}: ${message.substring(0, 50)}...`);
+    
+    // Отправляем SSE обновление
+    sendSSEUpdate({
+      type: 'admin_message_sent',
+      orderId: orderId,
+      message: adminMessage,
+      timestamp: new Date().toISOString()
+    });
+    
+    res.json({
+      success: true,
+      message: 'Сообщение отправлено',
+      adminMessage: adminMessage
+    });
+    
+  } catch (error) {
+    console.error('❌ Ошибка отправки сообщения администратора:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+});
+
 // Endpoint для очистки кэша (используется ботом при перезапуске)
 app.post('/api/bot/clear-cache', (req, res) => {
   try {
